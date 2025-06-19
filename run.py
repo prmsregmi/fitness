@@ -1,7 +1,12 @@
-from core.tools import Search, ContentExtractor
+"""FastAPI application runner with hot reload support."""
 
-import pprint
-search_tool = Search(num_results=5)
-extractor = ContentExtractor()
-results = extractor.enrich_results(search_tool("top end escooter in the US"))
-pprint.pprint(results)
+from app.main import app
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(
+        "app.main:app",
+        host="0.0.0.0", 
+        port=8000,
+        reload=True
+    )
