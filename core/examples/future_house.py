@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 # Load environment variables
 load_dotenv()
 
-async def future_house_api(query) -> Union[List[Any], Any]:
+def future_house_crow_api(query) -> Union[List[Any], Any]:
     """Interact with the FutureHouse API to query AI-developed disease treatments.
 
     Returns:
@@ -52,21 +52,8 @@ async def future_house_api(query) -> Union[List[Any], Any]:
     }
 
     logger.info(f"Starting FutureHouse API request with query: {query}")
-    start_time = time.time()
-    
-    # Run the potentially long-running task in a thread pool
-    loop = asyncio.get_event_loop()
-    task_response = await loop.run_in_executor(
-        None, 
-        client.run_tasks_until_done,
-        task_data
-    )
-    
-    end_time = time.time()
-    duration = end_time - start_time
-    logger.info(f"FutureHouse API request completed in {duration:.2f} seconds")
-    
-    return task_response
+
+    return client.run_tasks_until_done(task_data)
 
 def paper_qa_lib() -> Any:
     """Query the PaperQA library for information about PaperQA2.
@@ -91,25 +78,22 @@ def paper_qa_lib() -> Any:
 
 
 if __name__ == "__main__":
-    async def main():
-        start = time.time()
-        query = "Which neglected diseases had a treatment developed by artificial intelligence?"
-        task_response = await future_house_api(query)
-        end = time.time()
-        logger.info(f"Total time taken: {end - start:.2f} seconds")
-        
-        # Ensure the directory exists
-        os.makedirs('data/response', exist_ok=True)
-        file_path = 'data/response/task_response.txt'
-        
-        with open(file_path, 'w') as f:
-            if isinstance(task_response, list):
-                for idx, item in enumerate(task_response, 1):
-                    f.write(f"Item {idx}:\n")
-                    f.write(f"{item}\n\n")
-            else:
-                f.write(str(task_response))
-        
-        logger.info(f"Response saved to {file_path}")
-
-    asyncio.run(main())
+    start = time.time()
+    query = "Which neglected diseases had a treatment developed by artificial intelligence?"
+    task_response = future_house_api(query)
+    end = time.time()
+    logger.info(f"Total time taken: {end - start:.2f} seconds")
+    
+    # Ensure the directory exists
+    os.makedirs('data/response', exist_ok=True)
+    file_path = 'data/response/task_response.txt'
+    
+    with open(file_path, 'w') as f:
+        if isinstance(task_response, list):
+            for idx, item in enumerate(task_response, 1):
+                f.write(f"Item {idx}:\n")
+                f.write(f"{item}\n\n")
+        else:
+            f.write(str(task_response))
+    
+    logger.info(f"Response saved to {file_path}")
