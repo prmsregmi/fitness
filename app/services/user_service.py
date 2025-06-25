@@ -27,6 +27,7 @@ class UserService:
             logger.info(f"Created new user ID: {user_id}")
         return user_id
     
+    #TODO: load_old is not used as of now.
     @staticmethod
     async def get_user_history(user_id: str, load_old: bool = False) -> UserHistoryResponse:
         """Get all existing cached data for the user."""

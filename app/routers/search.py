@@ -11,7 +11,7 @@ from ..models.requests import SearchRequest
 router = APIRouter(prefix="/search", tags=["search"])
 
 @router.post("/")
-async def start_async_search(
+async def search(
     search_request: SearchRequest,
     system_generated_user_id: str = Depends(get_user_id),
 ):
