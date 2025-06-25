@@ -2,70 +2,46 @@
 Search router for handling search-related endpoints.
 """
 
-from fastapi import APIRouter, HTTPException, Query, Depends, BackgroundTasks
+from fastapi import APIRouter, HTTPException, Depends, Path
 
 from ..dependencies import get_user_id
 from ..services.search_service import SearchService
-from ..services.user_service import UserService
-from ..models.requests import SearchResponse
+from ..models.requests import SearchRequest
 
 router = APIRouter(prefix="/search", tags=["search"])
 
-
-@router.get("/", response_model=SearchResponse)
-async def search(
-    background_tasks: BackgroundTasks,
-    user_id: str = Depends(get_user_id),
-    query: str = Query(
-        default="",
-        description="Query to send to search API"
-    ),
-    force_refresh: bool = Query(
-        default=False,
-        description="Force a fresh request instead of using cached response"
-    )
+@router.post("/")
+async def start_async_search(
+    search_request: SearchRequest,
+    system_generated_user_id: str = Depends(get_user_id),
 ):
     """
-    Search endpoint that processes queries and tracks user requests.
+    Start an asynchronous search. Returns immediately with task information.
+    Use /search/status/{task_id} to check progress.
     """
-    if query == "":
-        return SearchResponse(
-            message="No query provided",
-            user_id=user_id,
-            query=""
-        )
-    
-    # Store pending request immediately - shows up in history as "pending"
-    request_id = await UserService.store_pending_request(user_id, query)
+    user_id = search_request.user_id or system_generated_user_id
     
     try:
-        # Perform the search (this can take as long as needed)
-        result = await SearchService.perform_search(query, force_refresh)
-        
-        # Update the pending request with the actual result
-        background_tasks.add_task(
-            UserService.update_request_with_result,
-            user_id,
-            request_id,
-            result
-        )
-        
-        return SearchResponse(
-            message=result,
-            user_id=user_id,
-            query=query
-        )
+        result = await SearchService.start_search(user_id, search_request.query, search_request.force_refresh)
+        return result
     except Exception as e:
-        # Update pending request with error
         import logging
-        logging.getLogger(__name__).error(f"Search failed: {str(e)}")
-        
-        error_result = {"error": str(e), "status": "failed"}
-        background_tasks.add_task(
-            UserService.update_request_with_result,
-            user_id,
-            request_id,
-            error_result
-        )
-        
+        logging.getLogger(__name__).error(f"Async search start failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/status/{task_id}")
+async def get_search_status(
+    task_id: str = Path(..., description="The task ID returned from /search/async"),
+    user_id: str = Depends(get_user_id),
+):
+    """
+    Get the status of an asynchronous search task.
+    """
+    try:
+        result = await SearchService.get_search_status(user_id, task_id)
+        return result
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Status check failed: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e)) 

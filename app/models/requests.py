@@ -2,14 +2,21 @@
 Pydantic models for request and response data structures.
 """
 
-from datetime import datetime
 from typing import List, Optional, Any
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 
 class SearchRequest(BaseModel):
-    query: str
-    force_refresh: bool = False
+    query: str = Field(..., min_length=5, description="Search query cannot be shorter than 10 characters.")
+    force_refresh: Optional[bool] = False
+    user_id: Optional[str] = None
+
+    @field_validator('query')
+    @classmethod
+    def validate_query_not_empty(cls, v):
+        if not v or v.strip() == "" or len(v.strip()) < 5:
+            raise ValueError("Query cannot be shorter than 10 characters.")
+        return v.strip()
 
 
 class SearchResponse(BaseModel):
@@ -32,6 +39,7 @@ class UserHistoryResponse(BaseModel):
     total_requests: int
     recent_requests: List[RequestHistoryItem]
     message: str
+    load_old: bool = False  # Whether to load old data from database
 
 
 class HealthResponse(BaseModel):
