@@ -80,7 +80,7 @@ def paper_qa_lib() -> Any:
 if __name__ == "__main__":
     start = time.time()
     query = "Which neglected diseases had a treatment developed by artificial intelligence?"
-    task_response = future_house_api(query)
+    task_response = future_house_crow_api(query)
     end = time.time()
     logger.info(f"Total time taken: {end - start:.2f} seconds")
     

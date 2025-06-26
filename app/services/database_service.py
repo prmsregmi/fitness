@@ -9,7 +9,7 @@ from typing import List, Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 
-from ..models.database import SessionLocal, User, UserRequest, SearchCache
+from ..models.database import SessionLocal, User, SearchRequest, Task
 from ..models.requests import RequestHistoryItem, UserHistoryResponse
 
 logger = logging.getLogger(__name__)
@@ -28,119 +28,108 @@ class DatabaseService:
             pass  # Don't close here, let caller handle it
     
     @staticmethod
-    def get_or_create_user(db: Session, user_id: str) -> User:
-        """Get existing user or create a new one."""
-        user = db.query(User).filter(User.id == user_id).first()
-        if not user:
-            user = User(id=user_id)
+    def create_user_and_task(db: Session) -> tuple[User, Task]:
+        """Create a new user and task for each search request."""
+        try:
+            # Create new user
+            user = User()
             db.add(user)
+            db.flush()  # Flush to get the user ID
+            
+            # Create new task for this user
+            task = Task(user_id=user.id)
+            db.add(task)
+            db.flush()  # Flush to get the task ID
+            
             db.commit()
             db.refresh(user)
-            logger.info(f"Created new user in database: {user_id}")
-        else:
-            # Update last active
-            user.last_active = datetime.now(UTC)
-            db.commit()
-        return user
+            db.refresh(task)
+            
+            logger.info(f"Created new user {user.id} and task {task.id}")
+            return user, task
+            
+        except Exception as e:
+            logger.error(f"Error creating user and task: {e}")
+            db.rollback()
+            raise
     
     @staticmethod
-    def store_user_request(db: Session, user_id: str, query: str, result: dict) -> Optional[UserRequest]:
-        """Store user request in database."""
+    def store_search_request(db: Session, query_hash: str, task_id, query: str, result: dict, status: str = "completed") -> Optional[SearchRequest]:
+        """Store search request in database with hex hash as ID."""
         try:
-            # Check for duplicate within 15 minutes
-            fifteen_minutes_ago = datetime.now(UTC) - timedelta(minutes=15)
-            recent_request = db.query(UserRequest).filter(
-                UserRequest.user_id == user_id,
-                UserRequest.query == query,
-                UserRequest.timestamp >= fifteen_minutes_ago
+            logger.info(f"Attempting to store search request: hash={query_hash}, task_id={task_id}, query={query}")
+            
+            # Check if this exact search already exists for this task
+            existing_request = db.query(SearchRequest).filter(
+                SearchRequest.id == query_hash,
+                SearchRequest.task_id == task_id
             ).first()
             
-            if recent_request:
-                logger.info("Duplicate query within 15 minutes, not storing")
-                return None
+            if existing_request:
+                logger.info(f"Search request with hash {query_hash} already exists for task {task_id}")
+                return existing_request
             
-            # Ensure user exists
-            user = DatabaseService.get_or_create_user(db, user_id)
-            
-            # Store new request
-            request = UserRequest(
-                user_id=user_id,
+            # Store new request with hex hash as ID
+            request = SearchRequest(
+                id=query_hash,  # Use the hex hash as ID
+                task_id=task_id,
                 query=query,
                 result=json.dumps(result),
-                timestamp=datetime.now(UTC)
+                status=status,
+                created_at=datetime.now(UTC),
+                completed_at=datetime.now(UTC) if status == "completed" else None
             )
+            
+            logger.info(f"Created SearchRequest object: {request}")
             db.add(request)
+            logger.info("Added SearchRequest to session")
             db.commit()
+            logger.info("Committed SearchRequest to database")
             db.refresh(request)
             
-            logger.info(f"Stored user request in database: {request.id}")
+            logger.info(f"Successfully stored search request with hash {query_hash} for task {task_id}")
             return request
             
         except Exception as e:
-            logger.error(f"Error storing user request: {e}")
+            logger.error(f"Error storing search request: {e}")
+            logger.exception("Full exception details:")
             db.rollback()
             return None
     
     @staticmethod
-    def get_user_history(db: Session, user_id: str, limit: int = 10) -> UserHistoryResponse:
-        """Get user's request history from database."""
+    def get_search_by_hash_and_task(db: Session, query_hash: str, task_id: str) -> Optional[SearchRequest]:
+        """Get search request by hash and task ID."""
         try:
-            # Ensure user exists
-            user = DatabaseService.get_or_create_user(db, user_id)
-            
-            # Get recent requests
-            requests = db.query(UserRequest).filter(
-                UserRequest.user_id == user_id
-            ).order_by(desc(UserRequest.timestamp)).limit(limit).all()
-            
-            # Get total count
-            total_requests = db.query(UserRequest).filter(
-                UserRequest.user_id == user_id
-            ).count()
-            
-            # Convert to response format
+            return db.query(SearchRequest).filter(
+                SearchRequest.id == query_hash,
+                SearchRequest.task_id == task_id
+            ).first()
+        except Exception as e:
+            logger.error(f"Error retrieving search by hash and task: {e}")
+            return None
+    
+    @staticmethod
+    def get_search_history(db: Session, limit: int = 10) -> list:
+        """Get recent search history from database."""
+        try:
+            requests = db.query(SearchRequest).order_by(desc(SearchRequest.created_at)).limit(limit).all()
             requests_history = []
             for req in requests:
                 try:
                     result = json.loads(req.result)
-                    requests_history.append(RequestHistoryItem(
-                        query=req.query,
-                        result=result,
-                        timestamp=req.timestamp.isoformat(),
-                        request_id=str(req.id)
-                    ))
+                    requests_history.append({
+                        "query": req.query,
+                        "result": result,
+                        "timestamp": req.created_at.isoformat(),
+                        "request_id": req.id,  # Now this is the hex hash
+                        "task_id": str(req.task_id),
+                        "status": req.status,
+                        "completed_at": req.completed_at.isoformat() if req.completed_at else None
+                    })
                 except Exception as e:
                     logger.error(f"Error parsing request result: {e}")
                     continue
-            
-            return UserHistoryResponse(
-                user_id=user_id,
-                total_requests=total_requests,
-                recent_requests=requests_history,
-                message="Welcome to your request history!"
-            )
-            
+            return requests_history
         except Exception as e:
-            logger.error(f"Error retrieving user history: {e}")
-            return UserHistoryResponse(
-                user_id=user_id,
-                total_requests=0,
-                recent_requests=[],
-                message="Welcome! No request history yet."
-            )
-    
-    @staticmethod
-    def cleanup_old_requests(db: Session, days: int = 30) -> int:
-        """Clean up old requests older than specified days."""
-        try:
-            cutoff_date = datetime.now(UTC) - timedelta(days=days)
-            deleted = db.query(UserRequest).filter(
-                UserRequest.timestamp < cutoff_date
-            ).delete()
-            db.commit()
-            logger.info(f"Cleaned up {deleted} old requests")
-            return deleted
-        except Exception as e:
-            logger.error(f"Error cleaning up old requests: {e}")
-            db.rollback()
-            return 0 
+            logger.error(f"Error retrieving search history: {e}")
+            return []

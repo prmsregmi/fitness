@@ -7,9 +7,11 @@ import json
 import logging
 from typing import List, Optional
 from fastapi import Request, Response
+from datetime import datetime, UTC
 
 from ..cache import request_cache
 from ..models.requests import RequestHistoryItem, UserHistoryResponse
+from ..models.database import SessionLocal, User, Task, SearchRequest
 
 logger = logging.getLogger(__name__)
 
@@ -27,84 +29,158 @@ class UserService:
             logger.info(f"Created new user ID: {user_id}")
         return user_id
     
-    #TODO: load_old is not used as of now.
     @staticmethod
-    async def get_user_history(user_id: str, load_old: bool = False) -> UserHistoryResponse:
-        """Get all existing cached data for the user."""
+    async def get_user_history(user_id: str) -> UserHistoryResponse:
+        """
+        Get all tasks and their search requests for a specific user_id.
+        The user_id should match the User.id in the database.
+        """
         try:
             requests_history = []
             
-            # Get all cached search results for this user
-            if request_cache._redis:
-                pattern = f"search:{user_id}:*"
-                keys = await request_cache._redis.keys(pattern)
+            db = SessionLocal()
+            try:
+                # Find the user by ID (user_id should match User.id)
+                user = db.query(User).filter(User.id == user_id).first()
                 
-                for key in keys:
-                    try:
-                        # Convert key to string if it's bytes
-                        key_str = key.decode('utf-8') if isinstance(key, bytes) else key
-                        
-                        cached_result = await request_cache._redis.get(key)
-                        if cached_result:
-                            # Parse the cached result
-                            if isinstance(cached_result, bytes):
-                                cached_result = cached_result.decode('utf-8')
+                if not user:
+                    logger.info(f"User {user_id} not found in database - new user")
+                    return UserHistoryResponse(
+                        user_id=user_id,
+                        total_requests=0,
+                        recent_requests=[],
+                        message="No search history found - you're a new user!"
+                    )
+                
+                # Get all tasks for this user
+                tasks = db.query(Task).filter(Task.user_id == user.id).all()
+                logger.info(f"Found {len(tasks)} tasks for user {user_id}")
+                
+                # For each task, get all its search requests
+                for task in tasks:
+                    search_requests = db.query(SearchRequest).filter(SearchRequest.task_id == task.id).all()
+                    
+                    for search_request in search_requests:
+                        try:
+                            # Parse the result JSON
+                            result = json.loads(search_request.result)
                             
-                            result = json.loads(cached_result) if isinstance(cached_result, str) else cached_result
-                            
-                            # Extract query hash from key
-                            query_hash = key_str.split(":")[-1]
-                            
-                            # Get the actual query from the cached result
-                            actual_query = result.get("query", f"Search {query_hash[:8]}")
-                            search_status = result.get("status", "unknown")
-                            timestamp = result.get("timestamp", "unknown")
-                            completed_at = result.get("completed_at")
-                            
-                            # Build request history item based on status
-                            if search_status == "completed":
-                                search_result = result.get("result")
-                                display_timestamp = completed_at or timestamp
-                            elif search_status == "pending":
-                                search_result = {"status": "pending", "message": "Search in progress..."}
-                                display_timestamp = timestamp
-                            elif search_status == "failed":
-                                search_result = {"status": "failed", "error": result.get("error", "Unknown error")}
-                                display_timestamp = completed_at or timestamp
-                            else:
-                                search_result = result
-                                display_timestamp = timestamp
-                            
+                            # Create request history item
                             requests_history.append(RequestHistoryItem(
-                                query=actual_query,
-                                result=search_result,
-                                timestamp=display_timestamp,
-                                request_id=query_hash,
-                                status=search_status,
-                                completed_at=completed_at
+                                query=search_request.query,
+                                result=result,
+                                timestamp=search_request.created_at.isoformat(),
+                                request_id=search_request.id,  # This is the hex hash
+                                status=search_request.status,
+                                completed_at=search_request.completed_at.isoformat() if search_request.completed_at else None
                             ))
-                    except Exception as e:
-                        logger.error(f"Error processing cached key {key}: {e}")
-                        continue
+                            
+                        except Exception as e:
+                            logger.error(f"Error processing search request {search_request.id}: {e}")
+                            continue
+                
+                # Also check Redis for any pending requests that might belong to this user
+                await UserService._add_redis_pending_requests(user_id, requests_history)
                 
                 # Sort by timestamp (most recent first)
                 requests_history.sort(
-                    key=lambda x: x.timestamp if x.timestamp != "unknown" else "1900-01-01T00:00:00", 
+                    key=lambda x: x.timestamp if x.timestamp else "1900-01-01T00:00:00",
                     reverse=True
                 )
+                
+                return UserHistoryResponse(
+                    user_id=user_id,
+                    total_requests=len(requests_history),
+                    recent_requests=requests_history,
+                    message=f"Found {len(requests_history)} search requests across {len(tasks)} tasks" if requests_history else "No search history found"
+                )
             
-            return UserHistoryResponse(
-                user_id=user_id,
-                total_requests=len(requests_history),
-                recent_requests=requests_history,
-                message="Your search history" if requests_history else "No search history found"
-            )
-            
+            finally:
+                db.close()
+                
         except Exception as e:
-            logger.error(f"Error retrieving cached data: {str(e)}")
+            logger.error(f"Error retrieving user history for {user_id}: {str(e)}")
+            logger.exception("Full exception details:")
             return UserHistoryResponse(
                 user_id=user_id,
                 total_requests=0,
                 recent_requests=[],
                 message="Error retrieving search history"
-            ) 
+            )
+    
+    @staticmethod
+    async def _add_redis_pending_requests(user_id: str, requests_history: List[RequestHistoryItem]) -> None:
+        """Add any pending requests from Redis cache that might belong to this user."""
+        try:
+            if not request_cache._redis:
+                return
+            
+            # Get all keys from the "searches" hash
+            hash_key = "searches"
+            all_fields = await request_cache._redis.hkeys(hash_key)
+            
+            existing_hashes = {item.request_id for item in requests_history}
+            
+            for field in all_fields:
+                try:
+                    if isinstance(field, bytes):
+                        field = field.decode('utf-8')
+                    
+                    # Skip if we already have this request from DB
+                    if field in existing_hashes:
+                        continue
+                    
+                    cached_result = await request_cache.hget(hash_key, field)
+                    if cached_result:
+                        if isinstance(cached_result, bytes):
+                            cached_result = cached_result.decode('utf-8')
+                        
+                        result = json.loads(cached_result)
+                        status = result.get("status", "unknown")
+                        
+                        if status in ["pending", "failed"]:
+                            requests_history.append(RequestHistoryItem(
+                                query=result.get("query", f"Search {field[:8]}"),
+                                result=result.get("result") if status == "completed" else {"status": status, "message": result.get("error", "In progress...")},
+                                timestamp=result.get("timestamp", "unknown"),
+                                request_id=field,
+                                status=status,
+                                completed_at=result.get("completed_at")
+                            ))
+                            
+                except Exception as e:
+                    logger.error(f"Error processing Redis field {field}: {e}")
+                    continue
+                    
+        except Exception as e:
+            logger.error(f"Error adding Redis pending requests: {e}")
+    
+    @staticmethod
+    def get_or_create_user_in_db(user_id: str) -> User:
+        """Get existing user from database or create a new one with the specified user_id."""
+        db = SessionLocal()
+        try:
+            # Try to find existing user
+            user = db.query(User).filter(User.id == user_id).first()
+            
+            if user:
+                # Update last_active timestamp
+                user.last_active = datetime.now(UTC)
+                db.commit()
+                logger.info(f"Found existing user: {user_id}")
+                return user
+            
+            # Create new user with the specified ID
+            user = User(id=user_id)
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+            logger.info(f"Created new user in database: {user_id}")
+            return user
+            
+        except Exception as e:
+            logger.error(f"Error getting/creating user {user_id}: {e}")
+            db.rollback()
+            raise
+        finally:
+            db.close() 

@@ -7,8 +7,11 @@ This module provides the main FastAPI application instance and configuration.
 import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqladmin import Admin
 
-from .routers import users, search, admin
+from .routers import users, search, admin as admin_router
+from .models.database import engine
+from .admin import UserAdmin, TaskAdmin, SearchRequestAdmin
 
 # Configure logging
 logging.basicConfig(
@@ -32,7 +35,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Set up admin interface
+admin = Admin(app, engine)
+admin.add_view(UserAdmin)
+admin.add_view(TaskAdmin)
+admin.add_view(SearchRequestAdmin)
+
 # Include routers
 app.include_router(users.router)
 app.include_router(search.router)
-app.include_router(admin.router)
+app.include_router(admin_router.router)

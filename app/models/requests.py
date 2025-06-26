@@ -9,7 +9,6 @@ from pydantic import BaseModel, Field, field_validator
 class SearchRequest(BaseModel):
     query: str = Field(..., min_length=5, description="Search query cannot be shorter than 10 characters.")
     force_refresh: Optional[bool] = False
-    user_id: Optional[str] = None
 
     @field_validator('query')
     @classmethod
@@ -21,7 +20,6 @@ class SearchRequest(BaseModel):
 
 class SearchResponse(BaseModel):
     message: Any
-    user_id: str
     query: str
 
 
@@ -39,7 +37,6 @@ class UserHistoryResponse(BaseModel):
     total_requests: int
     recent_requests: List[RequestHistoryItem]
     message: str
-    load_old: bool = False  # Whether to load old data from database
 
 
 class HealthResponse(BaseModel):

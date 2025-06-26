@@ -1,14 +1,14 @@
 """
 Search service for handling search-related business logic.
 """
-
 import time
 import logging
-from typing import Any, Optional
+from core.examples.future_house import future_house_crow_api
 import hashlib
 import json
 import asyncio
 from datetime import datetime
+from futurehouse_client import PQATaskResponse
 
 from ..cache import request_cache
 
@@ -28,20 +28,21 @@ class SearchService:
     _background_tasks = {}  # Track running background tasks
 
     @staticmethod
-    async def start_search(user_id: str, query: str, force_refresh: bool = False) -> dict:
+    async def start_search(query: str, force_refresh: bool = False) -> dict:
         """
         Start a search query asynchronously. Returns immediately with task status.
         """
         logger.info(f"Starting search request with query: {query}")
         query_hash = hashlib.sha256(query.encode('utf-8')).hexdigest()
-        cache_key = f"search:{user_id}:{query_hash}"
+        hash_key = "searches"  # Main hash key
+        field_key = query_hash  # Field within the hash
         
         try:
             # Check if we have a valid cached value
             if not force_refresh:
-                cached_value = await request_cache._redis.get(cache_key)
+                cached_value = await request_cache.hget(hash_key, field_key)
                 if cached_value:
-                    logger.info(f"Cache hit for key: {cache_key}")
+                    logger.info(f"Cache hit for hash key: {hash_key}, field: {field_key}")
                     cached_data = json.loads(cached_value)
                     if cached_data.get("status") == "completed":
                         return {
@@ -62,10 +63,16 @@ class SearchService:
                         "from_cache": False
                     }
             
-            logger.info(f"Starting background search for: {cache_key}")
+            logger.info(f"Starting background search for hash key: {hash_key}, field: {field_key}")
             current_time = datetime.now()
             
-            # Store pending request immediately
+            # Start API call immediately for maximum speed
+            task = asyncio.create_task(
+                SearchService._execute_search_background(query, query_hash, hash_key, field_key, current_time)
+            )
+            SearchService._background_tasks[query_hash] = task
+            
+            # Store pending request in cache (while API runs in background)
             pending_request = {
                 "query": query,
                 "result": None,
@@ -74,13 +81,7 @@ class SearchService:
             }
             
             pending_serialized = json.dumps(pending_request)
-            await request_cache._redis.set(cache_key, pending_serialized, ex=request_cache._cache_ttl)
-            
-            # Start background task
-            task = asyncio.create_task(
-                SearchService._execute_search_background(user_id, query, query_hash, cache_key, current_time)
-            )
-            SearchService._background_tasks[query_hash] = task
+            await request_cache.hset(hash_key, field_key, pending_serialized)
             
             return {
                 "task_id": query_hash,
@@ -99,13 +100,13 @@ class SearchService:
             }
 
     @staticmethod
-    async def _execute_search_background(user_id: str, query: str, query_hash: str, cache_key: str, start_time: datetime):
+    async def _execute_search_background(query: str, query_hash: str, hash_key: str, field_key: str, start_time: datetime):
         """Execute the actual search in the background."""
         try:
             logger.info(f"Executing background search for query: {query}")
             
             # Run the blocking API call in a thread executor
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             result = await loop.run_in_executor(None, mock_api, query)
             
             # Update cache with completed result
@@ -118,9 +119,12 @@ class SearchService:
             }
             
             serialized_value = json.dumps(completed_request)
-            await request_cache._redis.set(cache_key, serialized_value, ex=request_cache._cache_ttl)
+            await request_cache.hset(hash_key, field_key, serialized_value)
             
             logger.info(f"Background search completed for query: {query}")
+            
+            # Direct database write after cache update (no signals)
+            await SearchService._sync_to_database(query_hash, query, result)
             
         except Exception as e:
             logger.error(f"Background search failed for query {query}: {str(e)}")
@@ -136,7 +140,7 @@ class SearchService:
             }
             
             error_serialized = json.dumps(error_request)
-            await request_cache._redis.set(cache_key, error_serialized, ex=request_cache._cache_ttl)
+            await request_cache.hset(hash_key, field_key, error_serialized)
             
         finally:
             # Clean up the background task reference
@@ -144,14 +148,68 @@ class SearchService:
                 del SearchService._background_tasks[query_hash]
 
     @staticmethod
-    async def get_search_status(user_id: str, task_id: str) -> dict:
+    async def _sync_to_database(query_hash: str, query: str, result: dict):
+        """Sync completed search result to database."""
+        try:
+            # Run database operations in thread executor to avoid blocking
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(
+                None, 
+                SearchService._perform_db_sync,
+                query_hash,
+                query, 
+                result
+            )
+            logger.info(f"Search result synced to database: {query_hash}")
+            
+        except Exception as e:
+            logger.error(f"Failed to sync search to database: {e}")
+    
+    @staticmethod
+    def _perform_db_sync(query_hash: str, query: str, result: dict):
+        """Perform the actual database sync (runs in thread executor)."""
+        from .database_service import DatabaseService
+        from ..models.database import SessionLocal
+        
+        db = SessionLocal()
+        try:
+            logger.info(f"Starting DB sync for query_hash: {query_hash}")
+            
+            # Create new user and task for each search
+            user, task = DatabaseService.create_user_and_task(db)
+            logger.info(f"Created user {user.id} and task {task.id}")
+            
+            # Store the search request with hex hash as ID
+            search_request = DatabaseService.store_search_request(
+                db=db,
+                query_hash=query_hash,
+                task_id=task.id,  # Pass UUID directly, not string
+                query=query,
+                result=result,
+                status="completed"
+            )
+            
+            if search_request:
+                logger.info(f"Successfully created search request: {search_request.id}")
+            else:
+                logger.error("Failed to create search request - returned None")
+                
+        except Exception as e:
+            logger.error(f"Exception in _perform_db_sync: {e}")
+            logger.exception("Full exception details:")
+        finally:
+            db.close()
+
+    @staticmethod
+    async def get_search_status(task_id: str) -> dict:
         """
         Get the status of a search task.
         """
-        cache_key = f"search:{user_id}:{task_id}"
+        hash_key = "searches"  # Main hash key
+        field_key = task_id    # Field within the hash
         
         try:
-            cached_value = await request_cache._redis.get(cache_key)
+            cached_value = await request_cache.hget(hash_key, field_key)
             if not cached_value:
                 return {
                     "task_id": task_id,
