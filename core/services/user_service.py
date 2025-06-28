@@ -5,7 +5,7 @@ User service for handling user identification and request history.
 import uuid
 import json
 import logging
-from typing import List, Optional
+from typing import List
 from fastapi import Request, Response
 from datetime import datetime, UTC
 
@@ -41,7 +41,9 @@ class UserService:
             db = SessionLocal()
             try:
                 # Find the user by ID (user_id should match User.id)
-                user = db.query(User).filter(User.id == user_id).first()
+                # Convert string UUID to UUID object for database query
+                user_uuid = uuid.UUID(user_id)
+                user = db.query(User).filter(User.id == user_uuid).first()
                 
                 if not user:
                     logger.info(f"User {user_id} not found in database - new user")
@@ -49,7 +51,7 @@ class UserService:
                         user_id=user_id,
                         total_requests=0,
                         recent_requests=[],
-                        message="No search history found - you're a new user!"
+                        message="No completed search history found - you're a new user!"
                     )
                 
                 # Get all tasks for this user
@@ -80,7 +82,7 @@ class UserService:
                             continue
                 
                 # Also check Redis for any pending requests that might belong to this user
-                await UserService._add_redis_pending_requests(user_id, requests_history)
+                # await UserService._add_redis_pending_requests(user_id, requests_history)
                 
                 # Sort by timestamp (most recent first)
                 requests_history.sort(
@@ -92,7 +94,11 @@ class UserService:
                     user_id=user_id,
                     total_requests=len(requests_history),
                     recent_requests=requests_history,
-                    message=f"Found {len(requests_history)} search requests across {len(tasks)} tasks" if requests_history else "No search history found"
+                    message=(
+                        f"Found {len(requests_history)} search requests across {len(tasks)} tasks" 
+                        if requests_history 
+                        else "No completed search history found"
+                    )
                 )
             
             finally:
@@ -117,7 +123,7 @@ class UserService:
             
             # Get all keys from the "searches" hash
             hash_key = "searches"
-            all_fields = await request_cache._redis.hkeys(hash_key)
+            all_fields = await request_cache.hkeys(hash_key)
             
             existing_hashes = {item.request_id for item in requests_history}
             
@@ -160,8 +166,11 @@ class UserService:
         """Get existing user from database or create a new one with the specified user_id."""
         db = SessionLocal()
         try:
+            # Convert string UUID to UUID object for database operations
+            user_uuid = uuid.UUID(user_id)
+            
             # Try to find existing user
-            user = db.query(User).filter(User.id == user_id).first()
+            user = db.query(User).filter(User.id == user_uuid).first()
             
             if user:
                 # Update last_active timestamp
@@ -171,7 +180,7 @@ class UserService:
                 return user
             
             # Create new user with the specified ID
-            user = User(id=user_id)
+            user = User(id=user_uuid)
             db.add(user)
             db.commit()
             db.refresh(user)

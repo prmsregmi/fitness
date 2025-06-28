@@ -4,8 +4,8 @@ Search router for handling search-related endpoints.
 
 from fastapi import APIRouter, HTTPException, Path
 
-from ..services.search_service import SearchService
-from ..models.requests import SearchRequest
+from core.services.search_service import SearchService
+from core.models.requests import SearchRequest
 router = APIRouter(prefix="/api/search", tags=["search"])
 
 @router.post("/")

@@ -10,8 +10,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqladmin import Admin
 
 from .routers import users, search, admin as admin_router
-from .models.database import engine
 from .admin import UserAdmin, TaskAdmin, SearchRequestAdmin
+
+from core.models.database import engine
 
 # Configure logging
 logging.basicConfig(

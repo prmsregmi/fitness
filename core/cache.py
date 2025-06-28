@@ -73,5 +73,12 @@ class RedisRequestCache:
             return await self._redis.hset(name, key, value)
         return None
 
+    async def hkeys(self, name: str):
+        """Get all keys from hash with auto-config."""
+        if self._redis:
+            await self._ensure_config_set()
+            return await self._redis.hkeys(name)
+        return []
+
 # Global cache instance
 request_cache = RedisRequestCache() 

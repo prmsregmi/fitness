@@ -3,7 +3,7 @@ Admin interface configuration using SQLAdmin.
 """
 
 from sqladmin import ModelView
-from .models.database import User, SearchRequest, Task
+from core.models.database import User, SearchRequest, Task
 
 
 class UserAdmin(ModelView, model=User):

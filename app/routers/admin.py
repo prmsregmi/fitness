@@ -4,8 +4,8 @@ Admin router for handling system and cache management endpoints.
 
 from fastapi import APIRouter
 
-from ..cache import request_cache
-from ..models.requests import HealthResponse, CacheClearResponse
+from core.cache import request_cache
+from core.models.requests import HealthResponse, CacheClearResponse
 
 router = APIRouter(tags=["admin"])
 

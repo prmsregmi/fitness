@@ -4,7 +4,7 @@ FastAPI dependencies for dependency injection.
 
 from fastapi import Request, Response
 
-from .services.user_service import UserService
+from core.services.user_service import UserService
 
 
 async def get_user_id(request: Request, response: Response) -> str:

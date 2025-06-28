@@ -2,11 +2,11 @@
 Users router for handling user-related endpoints.
 """
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends
 
 from ..dependencies import get_user_id
-from ..services.user_service import UserService
-from ..models.requests import UserHistoryResponse
+from core.services.user_service import UserService
+from core.models.requests import UserHistoryResponse
 
 router = APIRouter(prefix="/api/history", tags=["users"])
 
