@@ -14,3 +14,9 @@ wheels/
 
 # App-generated files
 data/
+*.db
+
+# Code Editor files
+.ruff_cache/
+.vscode/
+.cursor/
